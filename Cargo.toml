@@ -1,0 +1,16 @@
+[package]
+name = "distcomp"
+version = "0.1.0"
+authors = ["5225225 <5225225@mailbox.org>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sodiumoxide = "0.2.2"
+uuid = { version = "0.7.4", features = ["serde"] }
+rusqlite = { version = "0.19.0", features = ["uuid"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_cbor = "0.10"
+better-panic = "0.1.2"
