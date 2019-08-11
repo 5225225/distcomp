@@ -1,0 +1,8 @@
+[workspace]
+members = ["wasmlib", "notepad"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

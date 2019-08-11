@@ -2,73 +2,76 @@ use distcomp::data_structures::kvs::KeyValueStore;
 use distcomp::{ApplicationId, Journal, SqliteJournal};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use wasmi::{ImportsBuilder, ModuleInstance, NopExternals, RuntimeValue};
+use wasmi::{ImportsBuilder, ModuleInstance, RuntimeValue};
 
-#[derive(Serialize, Deserialize, Default, Debug, Hash, Clone)]
-struct Password {
-    username: String,
-    password: String,
+struct HostExternals<T: Journal> {
+    appid: ApplicationId,
+    journal: T,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct PasswordManagerData {
-    passwords: KeyValueStore<String, Password>,
-}
 
-fn do_foo(journal: &SqliteJournal, appid: ApplicationId, num: i32) {
-    let state = journal.get_state(appid);
 
-    let mut pwmandata;
+impl<T: Journal> wasmi::Externals for HostExternals<T> {
+   fn invoke_index(
+        &mut self,
+        index: usize,
+        args: wasmi::RuntimeArgs,
+    ) -> Result<Option<wasmi::RuntimeValue>, wasmi::Trap> {
+        match index {
+            1 => {
+                println!("Hello, World!");
 
-    if let Some(s) = state.map(|x| x.0) {
-        pwmandata = s;
-    } else {
-        pwmandata = PasswordManagerData {
-            passwords: KeyValueStore::new(),
-        };
+                Ok(None)
+            }
+            _ => panic!("Unimplemented function at {}", index),
+        }
     }
-
-    pwmandata.passwords.insert(
-        journal,
-        format!("old_meme #{}", num + 10000),
-        Password {
-            username: format!("AzureDiamond-{}", num + 5000),
-            password: format!("hunter{}", num),
-        },
-    );
-
-    journal.update_state(&pwmandata, appid);
 }
 
-fn func_main() {
-    // Parse WAT (WebAssembly Text format) into wasm bytecode.
-    let wasm_binary: Vec<u8> = wabt::wat2wasm(
-        r#"
-            (module
-                (func (export "test") (result i32)
-                    i32.const 1337
-                )
-            )
-            "#,
-    )
-    .expect("failed to parse wat");
+struct Resolver {}
+
+impl wasmi::ModuleImportResolver for Resolver {
+    fn resolve_func(&self, field_name: &str, _signature: &wasmi::Signature) -> Result<wasmi::FuncRef, wasmi::Error> {
+
+        match field_name {
+            "hello_world" => {
+               return Ok(wasmi::FuncInstance::alloc_host(wasmi::Signature::new(&[][..], None), 1));
+            }
+            _ => {
+                return Err(wasmi::Error::Instantiation("Failed to resolve".to_string()));
+            }
+        }
+
+        unimplemented!();
+    }
+}
+
+fn func_main<T: Journal>(appid: ApplicationId, journal: T) {
+    let wasm_binary =
+        include_bytes!("../../applications/target/wasm32-unknown-unknown/debug/notepad.wasm");
 
     // Load wasm binary and prepare it for instantiation.
-    let module = wasmi::Module::from_buffer(&wasm_binary).expect("failed to load wasm");
+    let module = wasmi::Module::from_buffer(&wasm_binary[..]).expect("failed to load wasm");
+
+    let resolver = Resolver {};
+
+    let imports = ImportsBuilder::new().with_resolver("env", &resolver);
 
     // Instantiate a module with empty imports and
     // assert that there is no `start` function.
-    let instance = ModuleInstance::new(&module, &ImportsBuilder::default())
+    let instance = ModuleInstance::new(&module, &imports)
         .expect("failed to instantiate wasm module")
         .assert_no_start();
+
+    let mut externals = HostExternals{appid, journal};
 
     // Finally, invoke the exported function "test" with no parameters
     // and empty external function executor.
     assert_eq!(
         instance
-            .invoke_export("test", &[], &mut NopExternals,)
+            .invoke_export("main", &[], &mut externals,)
             .expect("failed to execute export"),
-        Some(RuntimeValue::I32(1337)),
+        None,
     );
 }
 
@@ -78,5 +81,5 @@ fn main() {
 
     let appid = ApplicationId(Uuid::parse_str("f524b42d-7108-4489-8c84-988462634d39").unwrap());
 
-    func_main();
+    func_main(appid, journal);
 }
