@@ -1,11 +1,22 @@
+#![no_std]
 #![no_main]
 
-//use wasmlib::{cas_get, cas_put, get_state, update_state};
-use wasmlib::hello_world;
+extern crate alloc;
+
+use alloc::vec::Vec;
+use wasmlib;
+
+use wasmlib::output;
 
 #[export_name = "main"]
 fn main() {
-    unsafe {
-        hello_world();
+    let mut fooVec = Vec::new();
+
+    fooVec.push(1);
+    fooVec.push(2);
+    fooVec.push(3);
+
+    for val in fooVec {
+        output(&alloc::fmt::format(format_args!("got {} from vec!\n", val)));
     }
 }

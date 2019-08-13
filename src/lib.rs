@@ -4,20 +4,17 @@
 use rusqlite::params;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use rusqlite::OptionalExtension;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize};
 use sodiumoxide::crypto::hash::sha256;
 use sodiumoxide::crypto::sign;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
-use std::marker::PhantomData;
 use uuid::Uuid;
-
-pub mod data_structures;
 
 /// A 32 byte key type used to reference journal entries. Similar to a git commit.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct JournalKey([u8; 32]);
+pub struct JournalKey(pub [u8; 32]);
 
 impl fmt::Debug for JournalKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -53,42 +50,21 @@ impl FromSql for CASKey {
     }
 }
 
+impl wasmi::LittleEndianConvert for CASKey {
+    fn into_little_endian(self, buffer: &mut [u8]) {
+        buffer.copy_from_slice(&self.0);
+    }
+
+    fn from_little_endian(buffer: &[u8]) -> Result<Self, wasmi::ValueError> {
+        Ok(Self {
+            0: <[u8; 32]>::try_from(buffer).unwrap(),
+        })
+    }
+}
+
 /// A key type used to wrap a [`sign::PublicKey`] to refer to a device.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct DevicePublicKey(sign::PublicKey);
-
-#[derive(PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct CASReferenced<T> {
-    key: CASKey,
-    #[serde(skip)]
-    _marker: PhantomData<T>,
-}
-
-impl<T> Clone for CASReferenced<T> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<T> Copy for CASReferenced<T> {}
-
-impl<T: Serialize + DeserializeOwned> CASReferenced<T> {
-    pub fn put<J: Journal>(journal: &J, data: &T) -> Self {
-        let ser = serde_cbor::to_vec(data).unwrap();
-
-        Self {
-            key: journal.cas_put(ser),
-            _marker: PhantomData,
-        }
-    }
-
-    pub fn get<J: Journal>(&self, journal: &J) -> Option<T> {
-        let data = journal.cas_get(self.key)?;
-
-        serde_cbor::from_slice(&data).ok()?
-    }
-}
 
 impl FromSql for DevicePublicKey {
     fn column_result(value: ValueRef) -> FromSqlResult<Self> {
@@ -109,6 +85,8 @@ impl FromSql for ApplicationId {
         Ok(Self(uuid))
     }
 }
+
+static_assertions::assert_obj_safe!(label; Journal);
 
 pub trait Journal {
     fn settings_get(&self, key: &str) -> Option<Vec<u8>>;
@@ -138,16 +116,12 @@ pub trait Journal {
     fn cas_put(&self, data: Vec<u8>) -> CASKey;
     fn cas_list(&self) -> Vec<CASKey>;
 
-    fn easy_cas_get<T: DeserializeOwned>(&self, key: CASKey) -> Option<T> {
-        let data = self.cas_get(key)?;
+    fn get_state(&self, appid: ApplicationId) -> Option<CASKey> {
+        let head = self.this_head(appid)?;
 
-        serde_cbor::from_slice(&data).ok()?
-    }
+        let head_entry = self.get(head)?;
 
-    fn easy_cas_put<T: Serialize>(&self, data: &T) -> CASKey {
-        let ser = serde_cbor::to_vec(&data).unwrap();
-
-        self.cas_put(ser)
+        Some(head_entry.new_state)
     }
 
     fn commit_self(&self, application_id: ApplicationId, new_state: CASKey) -> JournalKey {
@@ -170,24 +144,6 @@ pub trait Journal {
         self.update_head(self.pubkey(), application_id, put_entry);
 
         put_entry
-    }
-
-    fn update_state<T: Serialize>(&self, data: &T, appid: ApplicationId) -> (CASKey, JournalKey) {
-        let entry = self.easy_cas_put(data);
-
-        let key = self.commit_self(appid, entry);
-
-        (entry, key)
-    }
-
-    fn get_state<T: DeserializeOwned>(&self, appid: ApplicationId) -> Option<(T, JournalEntry)> {
-        let head = self.this_head(appid)?;
-
-        let head_entry = self.get(head)?;
-
-        let state = head_entry.new_state;
-
-        Some((self.easy_cas_get::<T>(state)?, head_entry))
     }
 }
 
@@ -371,6 +327,12 @@ pub struct JournalEntry {
 
 #[derive(Copy, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct CASKey([u8; 32]);
+
+impl CASKey {
+    pub fn new(array: [u8; 32]) -> Self {
+        CASKey(array)
+    }
+}
 
 impl fmt::Debug for CASKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
