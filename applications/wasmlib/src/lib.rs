@@ -2,11 +2,13 @@
 #![no_std]
 
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct Key([u64; 4]);
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Key([u8; 32]);
 
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
+
+extern crate alloc;
 
 extern "C" {
     // Updates the current state to that in key
@@ -55,6 +57,79 @@ pub fn get_state() -> Option<Key> {
     }
 }
 
+const BUF_SIZE: usize = 1<<16;
+
+pub fn cas_get_into(key: &Key, buf: &mut alloc::vec::Vec<u8>) {
+    let mut offset = 0;
+    loop {
+        let mut in_buf = [0; BUF_SIZE];
+        let size;
+        unsafe {
+            size = _cas_get(key, offset, BUF_SIZE, in_buf.as_mut_ptr());
+        }
+        if size == 0 {
+            break;
+        }
+        if size < 0 {
+            panic!("Some error happened while reading");
+        }
+        offset += size as usize;
+        buf.extend_from_slice(&in_buf[0..size as usize]);
+    }
+}
+
+pub fn cas_get(key: &Key) -> alloc::vec::Vec<u8> {
+    let mut ret = alloc::vec::Vec::new();
+
+    cas_get_into(key, &mut ret);
+
+    ret
+}
+
+pub fn cas_put(data: &[u8]) -> Key {
+    let mut key = core::mem::MaybeUninit::<Key>::uninit();
+    
+    // fn _cas_put(src: *const u8, len: usize, key: *mut Key);
+    unsafe {
+        _cas_put(data.as_ptr(), data.len(), key.as_mut_ptr());
+
+        key.assume_init()
+    }
+}
+
+#[macro_export]
+macro_rules! print {
+    ($($arg:tt)*) => ($crate::_print(format_args!($($arg)*)));
+}
+
+#[macro_export]
+macro_rules! println {
+    () => ($crate::print!("\n"));
+    ($($arg:tt)*) => ({
+        $crate::_print_nl(format_args!($($arg)*));
+    })
+}
+
+pub fn _print(args: core::fmt::Arguments) {
+    core::fmt::write(&mut Output(), args).unwrap();
+}
+
+pub fn _print_nl(args: core::fmt::Arguments) {
+    core::fmt::write(&mut Output(), args).unwrap();
+
+    core::fmt::write(&mut Output(), format_args!("\n")).unwrap();
+}
+
+pub struct Output();
+
+impl core::fmt::Write for Output {
+    fn write_str(&mut self, s: &str) -> Result<(), core::fmt::Error> {
+        output(s);
+
+        Ok(())
+    }
+}
+
 pub fn output(s: &str) {
     unsafe {
         _output(s.as_ptr(), s.len());
@@ -69,4 +144,14 @@ fn panic(_: &core::panic::PanicInfo) -> ! {
 #[alloc_error_handler]
 fn alloc_error(_: core::alloc::Layout) -> ! {
     loop {}
+}
+
+pub mod prelude {
+    pub use crate::print;
+    pub use crate::println;
+
+    pub use crate::update_state;
+    pub use crate::get_state;
+    pub use crate::cas_get;
+    pub use crate::cas_put;
 }
