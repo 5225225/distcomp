@@ -6,3 +6,4 @@ edition = "2018"
 
 [dependencies]
 wasmlib = {path = "../wasmlib"}
+serde = { version = "1.0", default-features = false, features = ["derive"] }

@@ -1,4 +1,5 @@
 use distcomp::{ApplicationId, Journal, SqliteJournal};
+use std::io::Write;
 use uuid::Uuid;
 use wasmi::{ImportsBuilder, ModuleInstance};
 
@@ -105,6 +106,8 @@ impl wasmi::Externals for HostExternals {
 
                 print!("{}", output_str);
 
+                std::io::stdout().flush().expect("failed to flush stdout");
+
                 Ok(Some(len.into()))
             }
             _ => panic!("Unimplemented function at {}", index),
@@ -190,14 +193,9 @@ fn func_main(appid: ApplicationId, journal: Box<Journal>) {
         memory,
     };
 
-    // Finally, invoke the exported function "test" with no parameters
-    // and empty external function executor.
-    assert_eq!(
-        instance
-            .invoke_export("main", &[], &mut externals,)
-            .expect("failed to execute export"),
-        None,
-    );
+    instance
+        .invoke_export("main", &[], &mut externals)
+        .expect("failed to execute export");
 }
 
 fn main() {

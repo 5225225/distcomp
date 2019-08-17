@@ -1,9 +1,16 @@
+#![feature(never_type)]
+#![feature(panic_info_message)]
 #![feature(alloc_error_handler)]
 #![no_std]
 
+use serde::{Deserialize, Serialize};
+
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Key([u8; 32]);
+
+pub mod cas_referenced;
+pub mod stack;
 
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
@@ -57,7 +64,7 @@ pub fn get_state() -> Option<Key> {
     }
 }
 
-const BUF_SIZE: usize = 1<<16;
+const BUF_SIZE: usize = 1 << 16;
 
 pub fn cas_get_into(key: &Key, buf: &mut alloc::vec::Vec<u8>) {
     let mut offset = 0;
@@ -88,7 +95,7 @@ pub fn cas_get(key: &Key) -> alloc::vec::Vec<u8> {
 
 pub fn cas_put(data: &[u8]) -> Key {
     let mut key = core::mem::MaybeUninit::<Key>::uninit();
-    
+
     // fn _cas_put(src: *const u8, len: usize, key: *mut Key);
     unsafe {
         _cas_put(data.as_ptr(), data.len(), key.as_mut_ptr());
@@ -137,12 +144,33 @@ pub fn output(s: &str) {
 }
 
 #[panic_handler]
-fn panic(_: &core::panic::PanicInfo) -> ! {
+fn panic(panic: &core::panic::PanicInfo) -> ! {
+    print!("panic at "); // the disco
+
+    if let Some(location) = panic.location() {
+        print!(
+            "file {} line {} column {} ",
+            location.file(),
+            location.line(),
+            location.column()
+        )
+    } else {
+        print!("an unknown location ")
+    }
+
+    if let Some(message) = panic.message() {
+        let _ = core::fmt::write(&mut Output(), *message);
+    }
+
+    print!("\n\n");
+
     loop {}
 }
 
 #[alloc_error_handler]
-fn alloc_error(_: core::alloc::Layout) -> ! {
+fn alloc_error(layout: core::alloc::Layout) -> ! {
+    print!("failed to allocate {:?}", layout);
+
     loop {}
 }
 
@@ -150,8 +178,12 @@ pub mod prelude {
     pub use crate::print;
     pub use crate::println;
 
-    pub use crate::update_state;
-    pub use crate::get_state;
     pub use crate::cas_get;
     pub use crate::cas_put;
+    pub use crate::get_state;
+    pub use crate::update_state;
+
+    pub use crate::stack::Stack;
+
+    pub use crate::cas_referenced::CASReferenced;
 }

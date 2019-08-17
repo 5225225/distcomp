@@ -2,35 +2,62 @@
 #![no_main]
 
 extern crate alloc;
-use alloc::vec::Vec;
 
+use serde::{Deserialize, Serialize};
 use wasmlib::prelude::*;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MyState {
+    ctr: i32,
+    stack: Stack<()>,
+}
 
 #[export_name = "main"]
 fn main() {
-    let state = get_state();
+    let mut state;
 
-    let mut ctr = 10;
+    let get_state: Option<MyState> = get_state()
+        .map(CASReferenced::from_key)
+        .map(|x| x.get().expect("failed to deserialize data for state"));
 
-    if let Some(state) = state {
-        println!("Got state with some key! (debug is {:x?}", state);
+    if let Some(get_state) = get_state {
+        println!("Got some state {:?}", get_state);
 
-        let gotten = cas_get(&state);
-
-        println!("Got {:x?} from the CAS!", gotten);
-
-        println!("Setting ctr to {}", gotten[0] + 1);
-
-        ctr = gotten[0] + 1;
+        state = get_state;
     } else {
         println!("No state!");
+
+        state = MyState {
+            ctr: 0,
+            stack: Stack::new(),
+        };
     }
 
-    let new_state = cas_put(&[ctr]);
+    println!("The state looks like {:?}", state);
 
-    println!("Got state {:x?} as a CAS for ctr", new_state);
+    state.ctr += 1;
 
-    update_state(&new_state);
+    println!("The state looks like {:?} after incrementing ctr", state);
 
-    println!("Just wrote that state back. Run me again!");
+    state.stack = state.stack.push(());
+
+    let mut ctr = 0;
+
+    state.stack.walk_backwards(&mut |_| {
+        println!("counter: {}", ctr);
+        ctr += 1;
+    });
+
+    println!(
+        "The state looks like {:?} after pushing to the stack",
+        state
+    );
+
+    let key = CASReferenced::put(state);
+
+    println!("Going to update_state with key {:?}", key);
+
+    update_state(&key.key);
+
+    println!("Wrote state. Run me again!")
 }
