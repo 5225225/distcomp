@@ -22,6 +22,14 @@ impl Handle {
 
         None
     }
+
+    fn as_data(&self) -> Option<&[u8]> {
+        if let Handle::Data(k) = self {
+            return Some(k);
+        }
+
+        None
+    }
 }
 
 #[derive(Default)]
@@ -142,6 +150,25 @@ impl wasmi::Externals for HostExternals {
 
                 Ok(Some(len.into()))
             }
+            6 => {
+                let handle = args.nth_checked::<u32>(0)?;
+                let dest_addr = args.nth_checked::<u32>(1)?;
+                let len = args.nth_checked::<u32>(2)?;
+                let offset = args.nth_checked::<u32>(3)?;
+
+                let data = self.handles.get(handle as usize).expect("failed to get handle").as_data().expect("invalid handle type");
+
+                let start = u32::min(data.len() as u32, offset);
+                let stop = u32::min(data.len() as u32, offset + len);
+
+                let data_sliced = &data[start as usize ..stop as usize];
+
+                assert!(data_sliced.len() <= len as usize);
+
+                self.memory.set(offset, data_sliced).expect("failed to write memory");
+                
+                Ok(Some((data_sliced.len() as u32).into()))
+            }
             _ => panic!("Unimplemented function at {}", index),
         }
     }
@@ -186,6 +213,12 @@ impl wasmi::ModuleImportResolver for Resolver {
                 return Ok(wasmi::FuncInstance::alloc_host(
                     wasmi::Signature::new(&[I32, I32][..], Some(I32)),
                     5,
+                ));
+            }
+            "read" => {
+                return Ok(wasmi::FuncInstance::alloc_host(
+                    wasmi::Signature::new(&[I32, I32, I32, I32][..], Some(I32)),
+                    6,
                 ));
             }
             _ => {

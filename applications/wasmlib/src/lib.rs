@@ -46,6 +46,9 @@ extern "C" {
     // Writes len bytes to the screen, starting at src. Returns number of bytes written.
     #[link_name = "output"]
     fn _output(src: *const u8, len: usize) -> usize;
+
+    #[link_name = "read"]
+    fn _read(handle: u32, dest: *mut u8, len: usize, offset: usize) -> usize;
 }
 
 pub fn update_state(key: &KeyHandle) {
