@@ -14,6 +14,7 @@ struct MyState {
 
 #[export_name = "main"]
 fn main() {
+    /*
     let mut state;
 
     let get_state: Option<MyState> = get_state()
@@ -60,4 +61,5 @@ fn main() {
     update_state(&key.key);
 
     println!("Wrote state. Run me again!")
+    */
 }

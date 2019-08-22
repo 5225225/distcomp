@@ -1,13 +1,64 @@
-use distcomp::{ApplicationId, Journal, SqliteJournal};
+use distcomp::{ApplicationId, Journal, SqliteJournal, CASKey};
 use std::io::Write;
+use std::convert::TryInto;
 use uuid::Uuid;
 use wasmi::{ImportsBuilder, ModuleInstance};
+use handlemanager::HandleManager;
+use std::collections::HashMap;
+
+#[macro_use]
+extern crate derive_more;
+
+enum Handle {
+    Key(CASKey),
+    Data(Vec<u8>),
+}
+
+impl Handle {
+    fn as_key(&self) -> Option<&CASKey> {
+        if let Handle::Key(k) = self {
+            return Some(k);
+        }
+
+        None
+    }
+}
+
+#[derive(Default)]
+struct Handles {
+    manager: HandleManager,
+    handles: HashMap<usize, Handle>
+}
+
+impl Handles {
+    fn insert(&mut self, h: Handle) -> Option<usize> {
+        let id = self.manager.next()?;
+        self.handles.insert(id, h);
+        Some(id)
+    }
+
+    fn get(&mut self, k: usize) -> Option<&mut Handle> {
+        self.handles.get_mut(&k)
+    }
+
+    fn release(&mut self, k: usize) {
+        self.manager.release(k);
+        self.handles.remove(&k);
+    }
+}
 
 struct HostExternals {
     appid: ApplicationId,
     journal: Box<dyn Journal>,
     memory: wasmi::MemoryRef,
+    handles: Handles,
 }
+
+#[derive(Debug, Display)]
+#[display(fmt = "Invalid handle number {} used", _0)]
+struct InvalidHandleError(u32);
+
+impl wasmi::HostError for InvalidHandleError {} 
 
 impl wasmi::Externals for HostExternals {
     fn invoke_index(
@@ -16,69 +67,52 @@ impl wasmi::Externals for HostExternals {
         args: wasmi::RuntimeArgs,
     ) -> Result<Option<wasmi::RuntimeValue>, wasmi::Trap> {
         use wasmi::TrapKind::*;
+        use wasmi::RuntimeValue::*;
 
         match index {
             1 => {
-                let addr = args.nth_checked::<u32>(0)?;
+                let handle = args.nth_checked::<u32>(0)?;
 
-                let key = self
-                    .memory
-                    .get_value(addr)
-                    .map_err(|_| MemoryAccessOutOfBounds)?;
+                let key = self.handles
+                .get(handle.try_into().expect("could not convert a u32 to a usize?"))
+                .ok_or(InvalidHandleError(handle))?
+                .as_key().ok_or(InvalidHandleError(handle))?;
 
-                self.journal.commit_self(self.appid, key);
+                self.journal.commit_self(self.appid, *key);
 
                 Ok(None)
             }
             2 => {
-                let addr = args.nth_checked::<u32>(0)?;
-
                 let head = self.journal.get_state(self.appid);
 
-                if let Some(head) = head {
-                    self.memory
-                        .set_value(addr, head)
-                        .map_err(|_| MemoryAccessOutOfBounds)?;
 
-                    Ok(Some(0.into()))
+                if let Some(head) = head {
+                    let handle = self.handles.insert(Handle::Key(head)).expect("failed to insert handle").try_into().expect("could not convert a handle to a u32");
+
+                    Ok(Some(I32(handle)))
                 } else {
-                    Ok(Some(1.into()))
+                    Ok(Some(I32(0)))
                 }
             }
             3 => {
-                let key_addr = args.nth_checked::<u32>(0)?;
-                let offset = args.nth_checked::<u32>(1)? as usize;
-                let len = args.nth_checked::<u32>(2)? as usize;
-                let dest = args.nth_checked::<u32>(3)?;
 
-                let key = self
-                    .memory
-                    .get_value(key_addr)
-                    .map_err(|_| MemoryAccessOutOfBounds)?;
+                let handle = args.nth_checked::<u32>(0)?;
 
-                let data = self.journal.cas_get(key);
+                let key = self.handles
+                .get(handle.try_into().expect("could not convert a u32 to a usize?"))
+                .ok_or(InvalidHandleError(handle))?
+                .as_key().ok_or(InvalidHandleError(handle))?;
 
-                if let Some(data) = data {
-                    let start: usize = data.len().min(offset);
-                    let stop: usize = data.len().min(offset + len);
+                let data = self.journal.cas_get(*key).expect("failed to get data");
 
-                    let size: usize = (stop - start).min(len);
+                let handle: u32 = self.handles.insert(Handle::Data(data)).expect("failed to insert handle").try_into().expect("could not convert a handle to a u32");
 
-                    self.memory
-                        .set(dest, &data[start..start + size])
-                        .map_err(|_| MemoryAccessOutOfBounds)?;
-
-                    Ok(Some((size as i64).into()))
-                } else {
-                    return Ok(Some((-1 as i64).into()));
-                }
+                Ok(Some(handle.into()))
             }
             4 => {
                 let src = args.nth_checked::<u32>(0)?;
 
                 let len = args.nth_checked::<u32>(1)?;
-
-                let key_addr = args.nth_checked::<u32>(2)?;
 
                 let data = self
                     .memory
@@ -87,11 +121,9 @@ impl wasmi::Externals for HostExternals {
 
                 let key = self.journal.cas_put(data);
 
-                self.memory
-                    .set_value(key_addr, key)
-                    .map_err(|_| MemoryAccessOutOfBounds)?;
+                let handle: u32 = self.handles.insert(Handle::Key(key)).expect("failed to insert handle").try_into().expect("could nto convert a handle to a u32");
 
-                Ok(None)
+                Ok(Some(handle.into()))
             }
             5 => {
                 let src = args.nth_checked::<u32>(0)?;
@@ -134,19 +166,19 @@ impl wasmi::ModuleImportResolver for Resolver {
             }
             "get_state" => {
                 return Ok(wasmi::FuncInstance::alloc_host(
-                    wasmi::Signature::new(&[I32][..], Some(I32)),
+                    wasmi::Signature::new(&[][..], Some(I32)),
                     2,
                 ));
             }
             "cas_get" => {
                 return Ok(wasmi::FuncInstance::alloc_host(
-                    wasmi::Signature::new(&[I32, I32, I32, I32][..], Some(I64)),
+                    wasmi::Signature::new(&[I32][..], Some(I32)),
                     3,
                 ));
             }
             "cas_put" => {
                 return Ok(wasmi::FuncInstance::alloc_host(
-                    wasmi::Signature::new(&[I32, I32, I32][..], None),
+                    wasmi::Signature::new(&[I32, I32][..], Some(I32)),
                     4,
                 ));
             }
@@ -187,10 +219,13 @@ fn func_main(appid: ApplicationId, journal: Box<Journal>) {
         .expect("export name `memory` is not of memory type")
         .clone();
 
+    let handles = Handles::default();
+
     let mut externals = HostExternals {
         appid,
         journal,
         memory,
+        handles,
     };
 
     instance

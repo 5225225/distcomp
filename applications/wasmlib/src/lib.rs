@@ -3,11 +3,15 @@
 #![feature(alloc_error_handler)]
 #![no_std]
 
-use serde::{Deserialize, Serialize};
+use core::num::NonZeroU32;
 
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct Key([u8; 32]);
+#[derive(Debug)]
+pub struct KeyHandle(NonZeroU32);
+
+#[repr(transparent)]
+#[derive(Debug)]
+pub struct CASHandle(NonZeroU32);
 
 pub mod cas_referenced;
 pub mod stack;
@@ -21,52 +25,45 @@ extern "C" {
     // Updates the current state to that in key
 
     #[link_name = "update_state"]
-    fn _update_state(key: *const Key);
+    fn _update_state(key: u32);
 
     // Writes the current state into the pointer in key. Key does not need to be init.
     // returns non-zero on error (update_state has never been called for this application?)
     #[link_name = "get_state"]
-    fn _get_state(key: *mut Key) -> i32;
+    fn _get_state() -> u32;
 
     // Gets the data from key, starting at offset bytes in the blob, writing at most len bytes to dest.
     // Returns actual number of bytes read.
     // On error (key invalid?) returns negative
     #[link_name = "cas_get"]
-    fn _cas_get(key: *const Key, offset: usize, len: usize, dest: *mut u8) -> i64;
+    fn _cas_get(key: u32) -> u32;
 
     // starting at src, read len bytes, and insert it as an object, writing into key (key does not
     // need to be init)
     #[link_name = "cas_put"]
-    fn _cas_put(src: *const u8, len: usize, key: *mut Key);
+    fn _cas_put(src: *const u8, len: usize) -> u32;
 
     // Writes len bytes to the screen, starting at src. Returns number of bytes written.
     #[link_name = "output"]
     fn _output(src: *const u8, len: usize) -> usize;
 }
 
-pub fn update_state(key: &Key) {
+pub fn update_state(key: &KeyHandle) {
     unsafe {
-        _update_state(key);
+       _update_state(key.0.get());
     }
 }
 
-pub fn get_state() -> Option<Key> {
-    let mut key = core::mem::MaybeUninit::<Key>::uninit();
-
+pub fn get_state() -> Option<KeyHandle> {
     unsafe {
-        let ret = _get_state(key.as_mut_ptr());
-
-        if ret == 0 {
-            Some(key.assume_init())
-        } else {
-            None
-        }
+        Some(KeyHandle(NonZeroU32::new(_get_state())?))
     }
 }
 
 const BUF_SIZE: usize = 1 << 16;
 
 pub fn cas_get_into(key: &Key, buf: &mut alloc::vec::Vec<u8>) {
+    /*
     let mut offset = 0;
     loop {
         let mut in_buf = [0; BUF_SIZE];
@@ -83,25 +80,26 @@ pub fn cas_get_into(key: &Key, buf: &mut alloc::vec::Vec<u8>) {
         offset += size as usize;
         buf.extend_from_slice(&in_buf[0..size as usize]);
     }
+    */
 }
 
-pub fn cas_get(key: &Key) -> alloc::vec::Vec<u8> {
-    let mut ret = alloc::vec::Vec::new();
-
-    cas_get_into(key, &mut ret);
-
-    ret
-}
-
-pub fn cas_put(data: &[u8]) -> Key {
-    let mut key = core::mem::MaybeUninit::<Key>::uninit();
-
-    // fn _cas_put(src: *const u8, len: usize, key: *mut Key);
+pub fn cas_get(key: &KeyHandle) -> Option<CASHandle> {
+    let h;
     unsafe {
-        _cas_put(data.as_ptr(), data.len(), key.as_mut_ptr());
-
-        key.assume_init()
+        h = _cas_get(key.0.get());
     }
+
+    Some(CASHandle(NonZeroU32::new(h)?))
+}
+
+pub fn cas_put(data: &[u8]) -> Option<KeyHandle> {
+    let k;
+
+    unsafe {
+        k = _cas_put(data.as_ptr(), data.len());
+    }
+
+    Some(KeyHandle(NonZeroU32::new(k)?))
 }
 
 #[macro_export]
