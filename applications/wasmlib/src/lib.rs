@@ -4,14 +4,37 @@
 #![no_std]
 
 use core::num::NonZeroU32;
+use alloc::vec::Vec;
 
+#[derive(Debug, PartialEq, Eq)]
 #[repr(transparent)]
-#[derive(Debug)]
 pub struct KeyHandle(NonZeroU32);
 
+impl Drop for KeyHandle {
+    fn drop(&mut self) {
+        _handle_release(self.0.get())
+    }
+}
+impl Handle for KeyHandle {
+
+}
+
+#[derive(Debug, PartialEq, Eq)]
 #[repr(transparent)]
-#[derive(Debug)]
 pub struct CASHandle(NonZeroU32);
+
+impl Drop for CASHandle {
+    fn drop(&mut self) {
+        _handle_release(self.0.get())
+    }
+}
+
+impl Handle for CASHandle {
+
+}
+
+trait Handle : Eq+Drop {
+}
 
 pub mod cas_referenced;
 pub mod stack;
@@ -41,7 +64,7 @@ extern "C" {
     // starting at src, read len bytes, and insert it as an object, writing into key (key does not
     // need to be init)
     #[link_name = "cas_put"]
-    fn _cas_put(src: *const u8, len: usize) -> u32;
+    fn _cas_put(src: *const u8, len: usize, handles: *const u32, handles_len: usize) -> u32;
 
     // Writes len bytes to the screen, starting at src. Returns number of bytes written.
     #[link_name = "output"]
@@ -49,6 +72,12 @@ extern "C" {
 
     #[link_name = "read"]
     fn _read(handle: u32, dest: *mut u8, len: usize, offset: usize) -> usize;
+
+    #[link_name = "cas_get_links"]
+    fn _cas_get_links(key: u32) -> u32;
+
+    #[link_name = "handle_release"]
+    fn _handle_release(handle: u32);
 }
 
 pub fn update_state(key: &KeyHandle) {
@@ -65,14 +94,17 @@ pub fn get_state() -> Option<KeyHandle> {
 
 const BUF_SIZE: usize = 1 << 16;
 
-pub fn cas_get_into(key: &Key, buf: &mut alloc::vec::Vec<u8>) {
-    /*
+pub fn cas_get_links(key: &CASHandle) -> Vec<CasHandle> {
+
+}
+
+pub fn get_into(handle: &CASHandle, buf: &mut alloc::vec::Vec<u8>) {
     let mut offset = 0;
     loop {
         let mut in_buf = [0; BUF_SIZE];
         let size;
         unsafe {
-            size = _cas_get(key, offset, BUF_SIZE, in_buf.as_mut_ptr());
+            size = _read(handle.0.get(), in_buf.as_mut_ptr(), BUF_SIZE, offset);
         }
         if size == 0 {
             break;
@@ -83,7 +115,12 @@ pub fn cas_get_into(key: &Key, buf: &mut alloc::vec::Vec<u8>) {
         offset += size as usize;
         buf.extend_from_slice(&in_buf[0..size as usize]);
     }
-    */
+}
+
+pub fn read(handle: &CASHandle) -> alloc::vec::Vec<u8> {
+    let mut v = Vec::new();
+    get_into(handle, &mut v);
+    v
 }
 
 pub fn cas_get(key: &KeyHandle) -> Option<CASHandle> {
@@ -95,11 +132,11 @@ pub fn cas_get(key: &KeyHandle) -> Option<CASHandle> {
     Some(CASHandle(NonZeroU32::new(h)?))
 }
 
-pub fn cas_put(data: &[u8]) -> Option<KeyHandle> {
+pub fn cas_put(data: &[u8], links: Vec<KeyHandle>) -> Option<KeyHandle> {
     let k;
 
     unsafe {
-        k = _cas_put(data.as_ptr(), data.len());
+        k = _cas_put(data.as_ptr(), data.len(), links.as_ptr() as *const u32, links.len());
     }
 
     Some(KeyHandle(NonZeroU32::new(k)?))

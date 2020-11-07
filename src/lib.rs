@@ -112,8 +112,8 @@ pub trait Journal {
     fn get(&self, key: JournalKey) -> Option<JournalEntry>;
     fn put(&self, entry: JournalEntry, keypair: (sign::SecretKey, sign::PublicKey)) -> JournalKey;
 
-    fn cas_get(&self, key: CASKey) -> Option<Vec<u8>>;
-    fn cas_put(&self, data: Vec<u8>) -> CASKey;
+    fn cas_get(&self, key: CASKey) -> Option<CASObj>;
+    fn cas_put(&self, obj: CASObj) -> CASKey;
     fn cas_list(&self) -> Vec<CASKey>;
 
     fn get_state(&self, appid: ApplicationId) -> Option<CASKey> {
@@ -175,6 +175,11 @@ impl SqliteJournal {
             PRIMARY KEY (application_id, device_id)
         );
 
+        CREATE TABLE IF NOT EXISTS links (
+            parent BLOB NOT NULL,
+            child BLOB NOT NULL,
+        )
+
         CREATE TABLE IF NOT EXISTS entries (
             id BLOB NOT NULL PRIMARY KEY,
             inner BLOB NOT NULL
@@ -198,6 +203,12 @@ impl SqliteJournal {
 
         journal
     }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CASObj {
+    pub links: Vec<CASKey>,
+    pub data: Vec<u8>,
 }
 
 impl Journal for SqliteJournal {
@@ -277,16 +288,23 @@ impl Journal for SqliteJournal {
         JournalKey(digest.as_ref().try_into().unwrap())
     }
 
-    fn cas_get(&self, key: CASKey) -> Option<Vec<u8>> {
-        self.db
+    fn cas_get(&self, key: CASKey) -> Option<CASObj> {
+        let data: Vec<u8> = self.db
             .prepare_cached("SELECT content FROM cas WHERE id = ?1")
             .unwrap()
             .query_row(params!(&key.0[..]), |row| row.get(0))
             .optional()
-            .unwrap()
+            .unwrap()?;
+
+        let ret = serde_cbor::from_slice(&data).expect("failed to deserialize");
+
+        return Some(ret);
     }
 
-    fn cas_put(&self, data: Vec<u8>) -> CASKey {
+    fn cas_put(&self, obj: CASObj) -> CASKey {
+
+        let data = serde_cbor::to_vec(&obj).expect("failed to serialize");
+
         let digest = sha256::hash(&data);
 
         self.db

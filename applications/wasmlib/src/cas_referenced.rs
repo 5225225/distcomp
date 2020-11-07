@@ -1,15 +1,19 @@
-use crate::Key;
 use core::marker::PhantomData;
 
-use crate::{cas_get, cas_put};
+use crate::{cas_get, cas_put, KeyHandle, CASHandle, read};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_cbor::{de::from_mut_slice, Result as CBORResult};
+use alloc::rc::Rc;
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-#[serde(transparent)]
+struct CASObject<T: Serialize+DeserializeOwned> {
+    data: T
+    links: Vec<Rc<KeyHandle>>
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CASReferenced<T> {
-    pub key: Key,
+    handle: Rc<KeyHandle>,
     _marker: PhantomData<T>,
 }
 
@@ -34,13 +38,18 @@ impl serde_cbor::ser::Write for WriteVec {
 }
 
 impl<T: Serialize + DeserializeOwned> CASReferenced<T> {
-    pub fn get(&self) -> CBORResult<T> {
-        let mut data = cas_get(&self.key);
+    pub fn get(&self) -> CBORResult<CASObject<T>> {
+        let mut data_handle = cas_get(&self.handle).expect("failed to get handle");
+        let mut data = read(&data_handle);
 
-        from_mut_slice(&mut data)
+        let de_data = from_mut_slice(&mut data)?;
+        Ok(CASObject {
+            data: de_data,
+            links: vec![],
+        })
     }
 
-    pub fn put(data: T) -> CASReferenced<T> {
+    pub fn put(data: T, links: Vec<&KeyHandle>) -> CASReferenced<T> {
         let mut writer = WriteVec(alloc::vec::Vec::new());
 
         let mut ser = serde_cbor::Serializer::new(writer);
@@ -57,9 +66,9 @@ impl<T: Serialize + DeserializeOwned> CASReferenced<T> {
         }
     }
 
-    pub fn from_key(key: Key) -> CASReferenced<T> {
+    pub fn from_handle(handle: Rc<KeyHandle>) -> CASReferenced<T> {
         CASReferenced {
-            key,
+            handle,
             _marker: PhantomData,
         }
     }

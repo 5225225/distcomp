@@ -3,12 +3,12 @@ use serde_cbor::Result as CBORResult;
 
 use crate::cas_referenced::CASReferenced;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct Stack<T> {
     head: Option<CASReferenced<StackNode<T>>>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct StackNode<T> {
     parent: Option<CASReferenced<StackNode<T>>>,
     data: T,

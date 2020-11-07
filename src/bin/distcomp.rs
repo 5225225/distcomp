@@ -111,7 +111,7 @@ impl wasmi::Externals for HostExternals {
                 .ok_or(InvalidHandleError(handle))?
                 .as_key().ok_or(InvalidHandleError(handle))?;
 
-                let data = self.journal.cas_get(*key).expect("failed to get data");
+                let data = self.journal.cas_get(*key).expect("failed to get data").data;
 
                 let handle: u32 = self.handles.insert(Handle::Data(data)).expect("failed to insert handle").try_into().expect("could not convert a handle to a u32");
 
@@ -119,15 +119,32 @@ impl wasmi::Externals for HostExternals {
             }
             4 => {
                 let src = args.nth_checked::<u32>(0)?;
-
                 let len = args.nth_checked::<u32>(1)?;
+                let handle_ptr = args.nth_checked::<u32>(1)?;
+                let handle_count = args.nth_checked::<u32>(1)?;
+
+                let mut links = Vec::new();
+
+                for offset in (0..handle_count).map(|x| x*4) {
+                    let h: u32 = self.memory.get_value(handle_ptr + offset).map_err(|_| MemoryAccessOutOfBounds)?;
+
+                    let key = self.handles
+                    .get(h.try_into().expect("could not convert a u32 to a usize?"))
+                    .ok_or(InvalidHandleError(h))?
+                    .as_key().ok_or(InvalidHandleError(h))?;
+
+                    links.push(*key);
+                }
 
                 let data = self
                     .memory
                     .get(src, len as usize)
                     .map_err(|_| MemoryAccessOutOfBounds)?;
 
-                let key = self.journal.cas_put(data);
+                let key = self.journal.cas_put(distcomp::CASObj {
+                    data,
+                    links,
+                });
 
                 let handle: u32 = self.handles.insert(Handle::Key(key)).expect("failed to insert handle").try_into().expect("could nto convert a handle to a u32");
 
@@ -165,9 +182,38 @@ impl wasmi::Externals for HostExternals {
 
                 assert!(data_sliced.len() <= len as usize);
 
-                self.memory.set(offset, data_sliced).expect("failed to write memory");
+                self.memory.set(dest_addr, data_sliced).expect("failed to write memory");
                 
                 Ok(Some((data_sliced.len() as u32).into()))
+            }
+            7 => {
+                use wasmi::LittleEndianConvert;
+
+                let handle = args.nth_checked::<u32>(0)?;
+
+                let data = self.handles.get(handle as usize).expect("failed to get handle").as_key().expect("invalid handle type");
+
+                let mut buf = Vec::new();
+
+                let links = self.journal.cas_get(*data).expect("failed to get object").links;
+
+                for link in links {
+                    let handle = self.handles.insert(Handle::Key(link)).expect("failed to insert handle") as u32;
+                    let mut handle_le = [0u8; 4];
+
+                    handle.into_little_endian(&mut handle_le);
+
+                    buf.extend_from_slice(&handle_le)
+                }
+
+                Ok(Some(I32(self.handles.insert(Handle::Data(buf)).expect("failed to insert handle").try_into().expect("failed to convert usize to handle"))))
+            }
+            8 => {
+                let handle = args.nth_checked::<u32>(0)?;
+
+                self.handles.release(handle as usize);
+
+                Ok(None)
             }
             _ => panic!("Unimplemented function at {}", index),
         }
@@ -205,7 +251,7 @@ impl wasmi::ModuleImportResolver for Resolver {
             }
             "cas_put" => {
                 return Ok(wasmi::FuncInstance::alloc_host(
-                    wasmi::Signature::new(&[I32, I32][..], Some(I32)),
+                    wasmi::Signature::new(&[I32, I32, I32, I32][..], Some(I32)),
                     4,
                 ));
             }
@@ -219,6 +265,18 @@ impl wasmi::ModuleImportResolver for Resolver {
                 return Ok(wasmi::FuncInstance::alloc_host(
                     wasmi::Signature::new(&[I32, I32, I32, I32][..], Some(I32)),
                     6,
+                ));
+            }
+            "cas_get_links" => {
+                return Ok(wasmi::FuncInstance::alloc_host(
+                    wasmi::Signature::new(&[I32][..], Some(I32)),
+                    7,
+                ));
+            }
+            "handle_release" => {
+                return Ok(wasmi::FuncInstance::alloc_host(
+                    wasmi::Signature::new(&[I32][..], None),
+                    8,
                 ));
             }
             _ => {
